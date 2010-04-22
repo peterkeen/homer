@@ -1,0 +1,128 @@
+#!/usr/bin/env perl
+
+# module: git repo containing a 'home' directory
+# config: stored in ~/.homer/config, json file
+
+use strict;
+use warnings;
+
+use File::Slurp   qw/ read_file write_file    /;
+use JSON::XS      qw/ decode_json encode_json /;
+use Getopt::Long;
+
+use constant DEFAULT_CONFIG_FILE_NAME => "$ENV{HOME}/.homer/config";
+
+GetOptions(
+    "f|file=s" => \(my $file_from_cmdline)
+);
+
+sub error;
+
+my %commands = (
+    clone  => \&clone_module,
+    link   => \&link_module,
+    path   => \&print_install_path,
+    # remove => \&remove_module,
+    # update => \&update_module,
+);
+
+my $command = shift;
+error "usage: $0 [options] command [command options]" unless $command;
+
+my $config_file_name = DEFAULT_CONFIG_FILE_NAME;
+$config_file_name = $ENV{HOMER_CONFIG_FILE} if defined $ENV{HOMER_CONFIG_FILE};
+$config_file_name = $file_from_cmdline if defined $file_from_cmdline;
+
+system("mkdir -p $ENV{HOME}/.homer");
+
+my $config = load_config($config_file_name);
+
+if ($commands{$command}) {
+    $commands{$command}->($config, @ARGV);
+} else {
+    error "$command is not a valid command";
+}
+
+write_config($config_file_name, $config);
+
+sub load_config
+{
+    my $filename = shift;
+    if (-e $filename) {
+        my $raw_json = read_file($filename);
+        return decode_json($raw_json);
+    } else {
+        return {};
+    }
+}
+
+sub write_config
+{
+    my ($filename, $config) = @_;
+    my $raw_json = encode_json($config);
+    system("touch $filename");
+    write_file($filename, {atomic => 1}, $raw_json);
+}
+
+sub clone_module
+{
+    my ($config, $url) = @_;
+    error "usage: $0 add URL" unless $url;
+    my @parts = split(/\//, $url);
+    my $name = pop @parts;
+    $name =~ s/\.git$//;
+
+    if (defined $config->{modules}{$name} && module_already_cloned($name)) {
+        error "$name already cloned from " . $config->{modules}{$name}{url};
+    }        
+
+    $config->{modules}{$name}{url} = $url;
+    git(clone => ( $url, $name ));
+}
+
+sub module_already_cloned
+{
+    my $name = shift;
+    return -d "$ENV{HOME}/.homer/$name";
+}   
+
+sub link_module
+{
+    my ($config, $name) = @_;
+}
+
+sub install_path
+{
+    my ($config, $name) = @_;
+
+    my $home = $config->{alternate_home_dir} || $ENV{HOME};
+    return $home . "/.homer" . ($name ? "/$name" : "");
+}
+
+sub print_install_path
+{
+    print install_path(@_);
+}
+
+sub git
+{
+    if (! `which git`) {
+        error "git is not in your path. Please install git.";
+    }
+    my ($command, @args) = @_;
+
+    my $command_line = join(
+        ' && ',
+        "pushd $ENV{HOME}/.homer &>/dev/null",
+        "git $command " . join(' ', @args),
+        "popd"
+    );
+    my $output = qx{$command_line 2>&1};
+    return $output;
+}
+
+sub error {
+    my $message = shift;
+    print STDERR $message . "\n";
+    exit 1;
+}
